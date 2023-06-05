@@ -46,6 +46,9 @@
 #include "rclcpp/rclcpp.hpp"
 #include "nav2_costmap_2d/layer.hpp"
 #include "nav2_costmap_2d/layered_costmap.hpp"
+#include "geometry_msgs/msg/pose_array.hpp"
+#include "geometry_msgs/msg/pose.hpp"
+#include <mutex>
 
 namespace stealth_costmap_plugin
 {
@@ -84,6 +87,20 @@ private:
   int GRADIENT_SIZE = 20;
   // Step of increasing cost per one cell in stealth
   int GRADIENT_FACTOR = 10;
+  
+  int RANDOM_SEED = 1;
+
+  double VIEW_DISTANCE_METERS = 10.0;
+
+  void observerCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
+
+  std::mutex stealth_message_mutex;
+  rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr observer_sub;
+
+  geometry_msgs::msg::PoseArray observerList;
+
+  unsigned char getCost(nav2_costmap_2d::Costmap2D & master_grid, int x, int y);
+
 };
 
 }  // namespace stealth_costmap_plugin

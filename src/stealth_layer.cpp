@@ -1,50 +1,10 @@
-/*********************************************************************
- *
- * Software License Agreement (BSD License)
- *
- *  Copyright (c) 2008, 2013, Willow Garage, Inc.
- *  Copyright (c) 2020, Samsung R&D Institute Russia
- *  All rights reserved.
- *
- *  Redistribution and use in source and binary forms, with or without
- *  modification, are permitted provided that the following conditions
- *  are met:
- *
- *   * Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *   * Redistributions in binary form must reproduce the above
- *     copyright notice, this list of conditions and the following
- *     disclaimer in the documentation and/or other materials provided
- *     with the distribution.
- *   * Neither the name of Willow Garage, Inc. nor the names of its
- *     contributors may be used to endorse or promote products derived
- *     from this software without specific prior written permission.
- *
- *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
- *  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
- *  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- *  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
- *  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- *  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
- *  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- *  POSSIBILITY OF SUCH DAMAGE.
- *
- * Author: Eitan Marder-Eppstein
- *         David V. Lu!!
- *         Alexey Merzlyakov
- *
- * Reference tutorial:
- * https://navigation.ros.org/tutorials/docs/writing_new_costmap2d_plugin.html
- *********************************************************************/
 #include "stealth_costmap_plugin/stealth_layer.hpp"
 
 #include "nav2_costmap_2d/costmap_math.hpp"
 #include "nav2_costmap_2d/footprint.hpp"
 #include "rclcpp/parameter_events_filter.hpp"
+
+#include <cmath>
 
 using nav2_costmap_2d::LETHAL_OBSTACLE;
 using nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
@@ -71,8 +31,17 @@ StealthLayer::onInitialize()
   declareParameter("enabled", rclcpp::ParameterValue(true));
   node->get_parameter(name_ + "." + "enabled", enabled_);
 
+  observer_sub = node->create_subscription<geometry_msgs::msg::PoseArray>("/observers", rclcpp::SensorDataQoS(), std::bind(&StealthLayer::observerCallback, this, std::placeholders::_1));
+
   need_recalculation_ = false;
   current_ = true;
+}
+
+void StealthLayer::observerCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg)
+{
+  stealth_message_mutex.lock();
+  observerList = *msg;
+  stealth_message_mutex.unlock();
 }
 
 // The method is called to ask the plugin: which area of costmap it needs to update.
@@ -124,6 +93,48 @@ StealthLayer::onFootprintChanged()
     layered_costmap_->getFootprint().size());
 }
 
+double getDistance(double x1, double y1, double x2, double y2)
+{
+  return std::sqrt(std::pow(x1 - x2, 2.0) + std::pow(y1 - y2, 2.0));
+}
+
+double normalize(double value, double min, double max)
+{
+  return (value - min) / (max - min);
+}
+
+// Computes the cost for a given cell utilizing the observers
+// current locations. Used in updateCosts
+//
+//
+unsigned char StealthLayer::getCost(nav2_costmap_2d::Costmap2D & master_grid, int mx, int my)
+{
+  // Get the position of the current cell in world coordinates
+  double wx, wz;
+  master_grid.mapToWorld(mx, my, wx, wz);
+
+  unsigned char maxCost = 0;
+
+  for (auto observer : observerList.poses)
+  {
+    double distance = getDistance(wx, wz, observer.position.x, observer.position.z);
+    double normalizedDistance = normalize(distance, 0, VIEW_DISTANCE_METERS);
+    if (normalizedDistance > 1){
+      continue;
+    }
+
+    // Invert it, so closer is higher cost
+    normalizedDistance = std::abs(normalizedDistance-1.0);
+
+    unsigned char cost = static_cast<unsigned char>(normalizedDistance * nav2_costmap_2d::LETHAL_OBSTACLE);
+
+    if (cost > maxCost){
+      maxCost = cost;
+    }
+  }
+  return maxCost;
+}
+
 // The method is called when costmap recalculation is required.
 // It updates the costmap within its window bounds.
 // Inside this method the costmap stealth is generated and is writing directly
@@ -135,6 +146,11 @@ StealthLayer::updateCosts(
   int max_j)
 {
   if (!enabled_) {
+    return;
+  }
+
+  // No cost modification is there's no observers
+  if (observerList.poses.size() == 0){
     return;
   }
 
@@ -150,7 +166,6 @@ StealthLayer::updateCosts(
   // - updateWithTrueOverwrite()
   // In this case using master_array pointer is equal to modifying local costmap_
   // pointer and then calling updateWithTrueOverwrite():
-  unsigned char * master_array = master_grid.getCharMap();
   unsigned int size_x = master_grid.getSizeInCellsX(), size_y = master_grid.getSizeInCellsY();
 
   // {min_i, min_j} - {max_i, max_j} - are update-window coordinates.
@@ -163,22 +178,20 @@ StealthLayer::updateCosts(
   max_i = std::min(static_cast<int>(size_x), max_i);
   max_j = std::min(static_cast<int>(size_y), max_j);
 
-  // Simply computing one-by-one cost per each cell
-  int stealth_index;
+  // Where we actually set the costs
   for (int j = min_j; j < max_j; j++) {
-    // Reset stealth_index each time when reaching the end of re-calculated window
-    // by OY axis.
-    stealth_index = 0;
     for (int i = min_i; i < max_i; i++) {
       int index = master_grid.getIndex(i, j);
+
+      unsigned char oldCost = master_grid.getCost(index);
+
+      // If the current cell we are checking is unknown, we should leave it that way
+      if (oldCost == nav2_costmap_2d::NO_INFORMATION)
+        continue;
+
       // setting the stealth cost
-      unsigned char cost = (LETHAL_OBSTACLE - stealth_index*GRADIENT_FACTOR)%255;
-      if (stealth_index <= GRADIENT_SIZE) {
-        stealth_index++;
-      } else {
-        stealth_index = 0;
-      }
-      master_array[index] = cost;
+      unsigned char cost = std::max(getCost(master_grid, i + min_i, j + min_j), oldCost);
+      master_grid.setCost(i + min_i, j + min_j, cost);
     }
   }
 }
