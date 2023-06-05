@@ -1,0 +1,5 @@
+<library path="stealth_costmap_plugin_core">
+  <class name="stealth_costmap_plugin/StealthLayer" type="stealth_costmap_plugin::StealthLayer" base_class_type="nav2_costmap_2d::Layer">
+    <description>This plugin adds in costs based on potential observability</description>
+  </class>
+</library>
