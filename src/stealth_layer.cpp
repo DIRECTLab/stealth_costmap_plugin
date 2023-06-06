@@ -5,6 +5,7 @@
 #include "rclcpp/parameter_events_filter.hpp"
 
 #include <cmath>
+#include <vector>
 
 using nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
 using nav2_costmap_2d::LETHAL_OBSTACLE;
@@ -192,8 +193,12 @@ namespace stealth_costmap_plugin
 
       if (numObstaclesBetween > 0) normalizedDistance = 0.0;
 
-      unsigned char cost = static_cast<unsigned char>(normalizedDistance * nav2_costmap_2d::LETHAL_OBSTACLE);
+      if (normalizedDistance > 0){
+        normalizedDistance += 0.05;
+        normalizedDistance = std::min(normalizedDistance, 1.0);
+      }
 
+      unsigned char cost = static_cast<unsigned char>(normalizedDistance * nav2_costmap_2d::LETHAL_OBSTACLE);
       if (cost > maxCost)
       {
         maxCost = cost;
@@ -247,6 +252,11 @@ namespace stealth_costmap_plugin
     max_i = std::min(static_cast<int>(size_x), max_i);
     max_j = std::min(static_cast<int>(size_y), max_j);
 
+    std::vector<std::vector<unsigned char>> results;
+    for (int i = 0; i < max_j - min_j; i++){
+      results.push_back(std::vector<unsigned char>(max_i - min_i));
+    }
+
     // Where we actually set the costs
     for (int j = min_j; j < max_j; j++)
     {
@@ -255,14 +265,24 @@ namespace stealth_costmap_plugin
         int index = master_grid.getIndex(i, j);
 
         unsigned char oldCost = master_grid.getCost(index);
+        results[j - min_j][i - min_i] = oldCost;
 
         // If the current cell we are checking is unknown, we should leave it that way
         if (oldCost == nav2_costmap_2d::NO_INFORMATION)
           continue;
 
         // setting the stealth cost
-        unsigned char cost = std::max(getCost(master_grid, i + min_i, j + min_j), oldCost);
-        master_grid.setCost(i + min_i, j + min_j, cost);
+        unsigned char cost = std::max(getCost(master_grid, i, j), oldCost);
+        results[j - min_j][i - min_i] = cost;
+        // master_grid.setCost(i, j, cost);
+      }
+    }
+
+    for (int j = min_j; j < max_j; j++)
+    {
+      for (int i = min_i; i < max_i; i++)
+      {
+        master_grid.setCost(i, j, results[j - min_j][i - min_i]);
       }
     }
   }
