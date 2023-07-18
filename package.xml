@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>stealth_costmap_plugin</name>
+  <name>audio_costmap_plugin</name>
   <version>1.0.0</version>
   <description>Run-time plugin for Costmap2D stealth layer</description>
   <maintainer email="taylor.anderson@usu.edu">Taylor Anderson</maintainer>
@@ -17,7 +17,7 @@
   <depend>rclcpp</depend>
 
   <export>
-    <costmap_2d plugin="${prefix}/stealth_layer.xml" />
+    <costmap_2d plugin="${prefix}/audio_layer.xml" />
     <build_type>ament_cmake</build_type>
   </export>
 </package>

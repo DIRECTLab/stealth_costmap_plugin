@@ -1,4 +1,4 @@
-#include "stealth_costmap_plugin/stealth_layer.hpp"
+#include "audio_costmap_plugin/audio_layer.hpp"
 
 #include "nav2_costmap_2d/costmap_math.hpp"
 #include "nav2_costmap_2d/footprint.hpp"
@@ -6,15 +6,16 @@
 
 #include <cmath>
 #include <vector>
+#include <array>
 
 using nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
 using nav2_costmap_2d::LETHAL_OBSTACLE;
 using nav2_costmap_2d::NO_INFORMATION;
 
-namespace stealth_costmap_plugin
+namespace audio_costmap_plugin
 {
 
-  StealthLayer::StealthLayer()
+  AudioLayer::AudioLayer()
       : last_min_x_(-std::numeric_limits<float>::max()),
         last_min_y_(-std::numeric_limits<float>::max()),
         last_max_x_(std::numeric_limits<float>::max()),
@@ -25,20 +26,21 @@ namespace stealth_costmap_plugin
   // This method is called at the end of plugin initialization.
   // It contains ROS parameter(s) declaration and initialization
   // of need_recalculation_ variable.
-  void
-  StealthLayer::onInitialize()
+  void AudioLayer::onInitialize()
   {
     auto node = node_.lock();
     declareParameter("enabled", rclcpp::ParameterValue(true));
     node->get_parameter(name_ + "." + "enabled", enabled_);
+    // node->get_parameter(name_ + "." + "danger_threshold", danger_threshold);
 
-    observer_sub = node->create_subscription<geometry_msgs::msg::PoseArray>("/observers", rclcpp::SensorDataQoS(), std::bind(&StealthLayer::observerCallback, this, std::placeholders::_1));
+    observer_sub = node->create_subscription<geometry_msgs::msg::PoseArray>("/observers", rclcpp::SensorDataQoS(), std::bind(&AudioLayer::observerCallback, this, std::placeholders::_1));
+    publisher_ = node->create_publisher<sensor_msgs::msg::Image>("audio_map", 10);
 
     need_recalculation_ = false;
     current_ = true;
   }
 
-  void StealthLayer::observerCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg)
+  void AudioLayer::observerCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg)
   {
     stealth_message_mutex.lock();
     observerList = *msg;
@@ -49,7 +51,7 @@ namespace stealth_costmap_plugin
   // Inside this method window bounds are re-calculated if need_recalculation_ is true
   // and updated independently on its value.
   void
-  StealthLayer::updateBounds(
+  AudioLayer::updateBounds(
       double /*robot_x*/, double /*robot_y*/, double /*robot_yaw*/, double *min_x,
       double *min_y, double *max_x, double *max_y)
   {
@@ -59,9 +61,7 @@ namespace stealth_costmap_plugin
       last_min_y_ = *min_y;
       last_max_x_ = *max_x;
       last_max_y_ = *max_y;
-      // For some reason when I make these -<double>::max() it does not
-      // work with Costmap2D::worldToMapEnforceBounds(), so I'm using
-      // -<float>::max() instead.
+
       *min_x = -std::numeric_limits<float>::max();
       *min_y = -std::numeric_limits<float>::max();
       *max_x = std::numeric_limits<float>::max();
@@ -88,14 +88,9 @@ namespace stealth_costmap_plugin
   // The method is called when footprint was changed.
   // Here it just resets need_recalculation_ variable.
   void
-  StealthLayer::onFootprintChanged()
+  AudioLayer::onFootprintChanged()
   {
     need_recalculation_ = true;
-
-    RCLCPP_DEBUG(rclcpp::get_logger(
-                     "nav2_costmap_2d"),
-                 "StealthLayer::onFootprintChanged(): num footprint points: %lu",
-                 layered_costmap_->getFootprint().size());
   }
 
   double getDistance(double x1, double y1, double x2, double y2)
@@ -108,125 +103,68 @@ namespace stealth_costmap_plugin
     return (value - min) / (max - min);
   }
 
-
-
-  // The actual meat of the code for the bresenham wall checking. This shouldn't be called directly
-  unsigned int _bresenhamHelper(nav2_costmap_2d::Costmap2D &master_grid, int mx1, int my1, int mx2, int my2, bool backwards)
+  inline float inv_lerp(float a, float b, float v)
   {
-    int dx = std::abs(mx2 - mx1);
-    int dy = std::abs(my2 - my1);
-
-    int x = mx1;
-    int y = my1;
-
-    int pk = 2 * dy - dx;
-
-    unsigned int wallCount = 0;
-
-    for (int i = 0; i < dx + 1; i++)
-    {
-      int currentIndex = backwards ? master_grid.getIndex(y, x) : master_grid.getIndex(x, y);
-      if (master_grid.getCost(currentIndex) > nav2_costmap_2d::MAX_NON_OBSTACLE)
-      {
-        wallCount++;
-      }
-
-      if (mx1 < mx2) x++;
-      else x--;
-
-      if (pk < 0) pk += 2 * dy;
-      else
-      {
-        if (my1 < my2) y++;
-        else y--;
-
-        pk += 2 * dy - 2 * dx;
-      }
-    }
-
-    return wallCount;
+    return (v - a) / (b - a);
   }
 
-  // Uses Bresenham Line Algorithm to compute how many wall cells are between the given positions
-  // This is useful for checking line of sight, as well as for audio, the thickness of walls between
-  // the 2 positions.
-  // This is just the kick off function, the real work happens in the helper
-  unsigned int bresenhamWallCheck(nav2_costmap_2d::Costmap2D &master_grid, int mx1, int my1, int mx2, int my2)
+  inline unsigned char audio_lerp(unsigned char a, unsigned char b, float t)
   {
-    int dx = std::abs(mx2 - mx1);
-    int dy = std::abs(my2 - my1);
-
-    if (dx < dy)
-      return _bresenhamHelper(master_grid, my1, mx1, my2, mx2, true);
-    else
-      return _bresenhamHelper(master_grid, mx1, my1, mx2, my2, false);
+    return static_cast<char>((static_cast<float>((b-a)) * t)) + a;
   }
+
+  unsigned char convert_to_scale(float max_safe_dB, float safe_dB, float cell_dB)
+  {
+    if (cell_dB <= safe_dB) return 0;
+    if (cell_dB >= max_safe_dB) return nav2_costmap_2d::MAX_NON_OBSTACLE;
+    // simple LERP to start
+    float percentage = inv_lerp(max_safe_dB, safe_dB, cell_dB);
+    unsigned char cost = audio_lerp(0u, nav2_costmap_2d::MAX_NON_OBSTACLE, percentage);
+    return cost;
+  }
+
+  
 
   // Computes the cost for a given cell utilizing the observers
   // current locations. Used in updateCosts
   //
   //
-  unsigned char StealthLayer::getCost(nav2_costmap_2d::Costmap2D &master_grid, int mx, int my)
+  unsigned char AudioLayer::getCost(nav2_costmap_2d::Costmap2D &master_grid, int mx, int my)
   {
-    // Get the position of the current cell in world coordinates
-    double wx, wz;
-    master_grid.mapToWorld(mx, my, wx, wz);
-
-    unsigned char maxCost = 0;
-
-    for (auto observer : observerList.poses)
+    size_t index = master_grid.getIndex(mx, my);
+    if (master_grid.getCost(index) >= LETHAL_OBSTACLE)
     {
-      double distance = getDistance(wx, wz, observer.position.x, observer.position.z);
-      double normalizedDistance = normalize(distance, 0, VIEW_DISTANCE_METERS);
-      if (normalizedDistance > 1)
-      {
-        continue;
-      }
-
-      // Get number of obstacles between observer and current point
-      unsigned int omx, omy; // observer map position
-      master_grid.worldToMap(observer.position.x, observer.position.z, omx, omy);
-      unsigned int numObstaclesBetween = bresenhamWallCheck(master_grid, mx, my, omx, omy);
-
-      // Invert it, so closer is higher cost
-      normalizedDistance = std::abs(normalizedDistance - 1.0);
-
-      if (numObstaclesBetween > 0) normalizedDistance = 0.0;
-
-      if (normalizedDistance > 0){
-        normalizedDistance += 0.05;
-        normalizedDistance = std::min(normalizedDistance, 1.0);
-      }
-
-      unsigned char cost = static_cast<unsigned char>(normalizedDistance * nav2_costmap_2d::LETHAL_OBSTACLE);
-      if (cost > maxCost)
-      {
-        maxCost = cost;
-      }
+      return master_grid.getCost(index);
     }
-    return maxCost;
+
+    float blurred_cost = audio_map.get_blurred_cost(mx, my);
+    unsigned char additional_cost = convert_to_scale(40, 20, blurred_cost);
+
+    return nav2_costmap_2d::MAX_NON_OBSTACLE;
+    unsigned char total_cost = master_grid.getCost(index) + additional_cost;
+    if (total_cost < master_grid.getCost(index)) return nav2_costmap_2d::MAX_NON_OBSTACLE; // check for wrap around
+    return total_cost;
   }
 
   // The method is called when costmap recalculation is required.
   // It updates the costmap within its window bounds.
   // Inside this method the costmap stealth is generated and is writing directly
   // to the resulting costmap master_grid without any merging with previous layers.
-  void
-  StealthLayer::updateCosts(
-      nav2_costmap_2d::Costmap2D &master_grid, int min_i, int min_j,
-      int max_i,
-      int max_j)
+  void AudioLayer::updateCosts(nav2_costmap_2d::Costmap2D &master_grid, int min_i, int min_j, int max_i, int max_j)
   {
     if (!enabled_)
     {
       return;
     }
 
-    // No cost modification if there's no observers
     if (observerList.poses.size() == 0)
     {
+      // we shouldn't run the update if there is no observers...
       return;
     }
+
+    update_volume_map(master_grid, observerList);
+    publisher_->publish(audio_map.to_image());
 
     // master_array - is a direct pointer to the resulting master_grid.
     // master_grid - is a resulting costmap combined from all layers.
@@ -257,6 +195,11 @@ namespace stealth_costmap_plugin
       results.push_back(std::vector<unsigned char>(max_i - min_i));
     }
 
+    RCLCPP_DEBUG(rclcpp::get_logger(
+                     "nav2_costmap_2d"),
+                 "AudioLayer::updateCosts(): Max Volume: %f",
+                 audio_map.get_max_volume());
+
     // Where we actually set the costs
     for (int j = min_j; j < max_j; j++)
     {
@@ -272,8 +215,11 @@ namespace stealth_costmap_plugin
           continue;
 
         // setting the stealth cost
-        unsigned char cost = std::max(getCost(master_grid, i, j), oldCost);
-        results[j - min_j][i - min_i] = cost;
+        // unsigned char cost = std::max(getCost(master_grid, i, j), oldCost);
+        // unsigned char cost = getCost(master_grid, i, j);
+        float percent_cost = audio_map.get_blurred_cost(i, j) / audio_map.get_max_volume();
+        unsigned char cost = static_cast<unsigned char>(percent_cost * 255.0f);
+        results[j - min_j][i - min_i] = std::max(cost, oldCost);
         // master_grid.setCost(i, j, cost);
       }
     }
@@ -287,10 +233,17 @@ namespace stealth_costmap_plugin
     }
   }
 
-} // namespace nav2_stealth_costmap_plugin
+  void AudioLayer::update_volume_map(nav2_costmap_2d::Costmap2D & master_grid, geometry_msgs::msg::PoseArray& observer_positions)
+  {
+    audio_map.set_map(master_grid);
+    // std::vector<std::array<float, 2>> observer_positions = {{ 0.5, -0.5 }}; // TODO: Use the subscribed version to do this
+    audio_map.update_costs(observer_positions, 4, 50);
+  }
 
-// This is the macro allowing a nav2_stealth_costmap_plugin::StealthLayer class
+} // namespace audio_costmap_plugin
+
+// This is the macro allowing a audio_costmap_plugin::AudioLayer class
 // to be registered in order to be dynamically loadable of base type nav2_costmap_2d::Layer.
 // Usually places in the end of cpp-file where the loadable class written.
 #include "pluginlib/class_list_macros.hpp"
-PLUGINLIB_EXPORT_CLASS(stealth_costmap_plugin::StealthLayer, nav2_costmap_2d::Layer)
+PLUGINLIB_EXPORT_CLASS(audio_costmap_plugin::AudioLayer, nav2_costmap_2d::Layer)

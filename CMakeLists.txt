@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(stealth_costmap_plugin)
+project(audio_costmap_plugin)
 
 set(lib_name ${PROJECT_NAME}_core)
 
@@ -23,7 +23,8 @@ set(dep_pkgs
 # === Build ===
 
 add_library(${lib_name} SHARED
-    src/stealth_layer.cpp)
+    src/audio_layer.cpp
+    src/audio_map.cpp)
 include_directories(include)
 
 
@@ -38,6 +39,6 @@ install(TARGETS ${lib_name}
 # pluginlib_export_plugin_description_file() installs stealth_layer.xml
 # file into "share" directory and sets ament indexes for it.
 # This allows the plugin to be discovered as a plugin of required type.
-pluginlib_export_plugin_description_file(nav2_costmap_2d stealth_layer.xml)
+pluginlib_export_plugin_description_file(nav2_costmap_2d audio_layer.xml)
 ament_target_dependencies(${lib_name} ${dep_pkgs})
 ament_package()

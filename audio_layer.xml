@@ -1,0 +1,5 @@
+<library path="audio_costmap_plugin_core">
+  <class name="audio_costmap_plugin/AudioLayer" type="audio_costmap_plugin::AudioLayer" base_class_type="nav2_costmap_2d::Layer">
+    <description>This plugin adds in costs based on potential observability</description>
+  </class>
+</library>

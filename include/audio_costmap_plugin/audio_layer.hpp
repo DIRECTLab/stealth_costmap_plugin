@@ -40,8 +40,8 @@
  * Reference tutorial:
  * https://navigation.ros.org/tutorials/docs/writing_new_costmap2d_plugin.html
  *********************************************************************/
-#ifndef GRADIENT_LAYER_HPP_
-#define GRADIENT_LAYER_HPP_
+#ifndef AUDIO_LAYER_HPP_
+#define AUDIO_LAYER_HPP_
 
 #include "rclcpp/rclcpp.hpp"
 #include "nav2_costmap_2d/layer.hpp"
@@ -49,14 +49,17 @@
 #include "geometry_msgs/msg/pose_array.hpp"
 #include "geometry_msgs/msg/pose.hpp"
 #include <mutex>
+#include <vector>
+#include "audio_map.hpp"
+#include "sensor_msgs/msg/image.hpp"
 
-namespace stealth_costmap_plugin
+namespace audio_costmap_plugin
 {
 
-class StealthLayer : public nav2_costmap_2d::Layer
+class AudioLayer : public nav2_costmap_2d::Layer
 {
 public:
-  StealthLayer();
+  AudioLayer();
 
   virtual void onInitialize();
   virtual void updateBounds(
@@ -68,14 +71,14 @@ public:
     nav2_costmap_2d::Costmap2D & master_grid,
     int min_i, int min_j, int max_i, int max_j);
 
-  virtual void reset()
-  {
-    return;
-  }
-
+  virtual void reset() {return;}
   virtual void onFootprintChanged();
-
   virtual bool isClearable() {return false;}
+
+private:
+  void observerCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
+  unsigned char getCost(nav2_costmap_2d::Costmap2D & master_grid, int x, int y);
+  void update_volume_map(nav2_costmap_2d::Costmap2D & master_grid, geometry_msgs::msg::PoseArray& observer_positions);
 
 private:
   double last_min_x_, last_min_y_, last_max_x_, last_max_y_;
@@ -83,26 +86,28 @@ private:
   // Indicates that the entire stealth should be recalculated next time.
   bool need_recalculation_;
 
+  // OLD ////////////////////////////////////////////
   // Size of stealth in cells
   int GRADIENT_SIZE = 20;
   // Step of increasing cost per one cell in stealth
   int GRADIENT_FACTOR = 10;
-  
   int RANDOM_SEED = 1;
-
   double VIEW_DISTANCE_METERS = 10.0;
+  ///////////////////////////////////////////////////
 
-  void observerCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
+  float danger_threshold;
+
+  AudioMap audio_map;
 
   std::mutex stealth_message_mutex;
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr observer_sub;
 
   geometry_msgs::msg::PoseArray observerList;
 
-  unsigned char getCost(nav2_costmap_2d::Costmap2D & master_grid, int x, int y);
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_;
 
 };
 
 }  // namespace stealth_costmap_plugin
 
-#endif  // GRADIENT_LAYER_HPP_
+#endif  // AUDIO_LAYER_HPP_
