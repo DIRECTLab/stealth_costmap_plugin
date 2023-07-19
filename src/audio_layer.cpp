@@ -237,7 +237,7 @@ namespace audio_costmap_plugin
   {
     audio_map.set_map(master_grid);
     // std::vector<std::array<float, 2>> observer_positions = {{ 0.5, -0.5 }}; // TODO: Use the subscribed version to do this
-    audio_map.update_costs(observer_positions, 4, 50);
+    audio_map.update_costs(observer_positions, 8, 50);
   }
 
 } // namespace audio_costmap_plugin

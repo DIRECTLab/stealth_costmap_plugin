@@ -49,7 +49,8 @@ sensor_msgs::msg::Image AudioMap::to_image()
   {
     for (size_t x = 0; x < width; x++)
     {
-      float val = get_blurred_cost(x, y) > 0 ? 1.0 : 0.0;
+      // float val = get_blurred_cost(x, y) > 0 ? 1.0 : 0.0;
+      float val = get_blurred_cost(x, y) / max;
       unsigned char red = static_cast<unsigned char>(val * 255);
       unsigned char green = 255u - red;
       unsigned char blue = 0;
@@ -84,17 +85,17 @@ bool AudioMap::is_valid(size_t x, size_t y)
 
 bool AudioMap::is_vertical_wall(size_t x, size_t y)
 {
-  return is_wall(x, y-1) && is_wall(x, y+1);
+  return is_wall(x, y-1) || is_wall(x, y+1);
 }
 
 bool AudioMap::is_horizontal_wall(size_t x, size_t y)
 {
-  return is_wall(x-1, y) && is_wall(x+1, y);
+  return is_wall(x-1, y) || is_wall(x+1, y);
 }
 
 bool AudioMap::is_wall(size_t x, size_t y)
 {
-  return map.getCost(map.getIndex(x, y)) > nav2_costmap_2d::MAX_NON_OBSTACLE;
+  return map.getCost(map.getIndex(x, y)) >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
 }
 
 float AudioMap::get_blurred_cost(size_t x_center, size_t y_center)
@@ -121,8 +122,8 @@ vec2i AudioMap::offset_vector(vec2i input_vector)
 	float random_num = dis(gen);
 	float offset = (random_num) * MAX_OFFSET_RADIANS;
 
-	float new_x = std::cos(MAX_OFFSET_RADIANS) * input_vector.x - std::sin(MAX_OFFSET_RADIANS) * input_vector.y;
-	float new_y = std::sin(MAX_OFFSET_RADIANS) * input_vector.x + std::cos(MAX_OFFSET_RADIANS) * input_vector.y;
+	float new_x = std::cos(offset) * input_vector.x - std::sin(offset) * input_vector.y;
+	float new_y = std::sin(offset) * input_vector.x + std::cos(offset) * input_vector.y;
 
 	return {static_cast<long>(new_x), static_cast<long>(new_y)};
 }
@@ -150,8 +151,10 @@ void AudioMap::update_costs(geometry_msgs::msg::PoseArray& observer_positions, u
       map.worldToMapNoBounds(observer.position.x, observer.position.y, mx, my);
       cast_ray.start.x = mx;
       cast_ray.start.y = my;
-      for (uint32_t j = 0; j < MAX_BOUNCES; j++)
+      uint32_t j = 0;
+      for (j = 0; j < MAX_BOUNCES; j++)
       {
+        std::cout << "Direction " << j << ": (" << cast_ray.direction.x << ", " << cast_ray.direction.y << ")" << std::endl;
         if (!bresenham(cast_ray))
         {
           break;
@@ -199,11 +202,16 @@ bool AudioMap::bresenham_helper(ray& cast_ray, bool swapped)
       }
       if (is_wall(cast_ray.start.y, cast_ray.start.x))
       {
-        bool is_horizontal = is_horizontal_wall(cast_ray.start.y, cast_ray.start.x);
-        bool is_vertical = is_vertical_wall(cast_ray.start.y, cast_ray.start.x);
+        bool flip_x = prev_pos.y != cast_ray.start.y;
+        bool flip_y = prev_pos.x != cast_ray.start.x;
+        // check instead using the previous position. If the y's are the same, then we should just flip x
+        // if x's are same, flips the y's
+        // if both are changed, flip both (for now)
+
+        cast_ray.start = prev_pos;
         cast_ray = ray::swap_xy(cast_ray);
-        cast_ray.direction.x *= is_vertical ? -1 : 1;
-        cast_ray.direction.y *= is_horizontal ? -1 : 1;
+        cast_ray.direction.x *= flip_x ? -1 : 1;
+        cast_ray.direction.y *= flip_y ? -1 : 1;
         return true;
       }
       volume_map[cast_ray.start.x * width + cast_ray.start.y] = add_volumes(volume_map[cast_ray.start.x * width + cast_ray.start.y], cast_ray.current_dB);
@@ -216,8 +224,9 @@ bool AudioMap::bresenham_helper(ray& cast_ray, bool swapped)
       }
       if (is_wall(cast_ray.start.x, cast_ray.start.y))
       {
-        cast_ray.direction.x *= is_horizontal_wall(cast_ray.start.x, cast_ray.start.y) ? -1 : 1;
-        cast_ray.direction.y *= is_vertical_wall(cast_ray.start.x, cast_ray.start.y) ? -1 : 1;
+        cast_ray.direction.x *= cast_ray.start.x != prev_pos.x ? -1 : 1;
+        cast_ray.direction.y *= cast_ray.start.y != prev_pos.y ? -1 : 1;
+        cast_ray.start = prev_pos;
         return true;
       }
       volume_map[cast_ray.start.y * width + cast_ray.start.x] = add_volumes(volume_map[cast_ray.start.y * width + cast_ray.start.x], cast_ray.current_dB);
